@@ -5,7 +5,7 @@ import subprocess
 import json
 from pydantic import BaseModel
 
-app = FastAPI(title="Airdown")
+app = FastAPI(title="Airdown Personal")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +19,7 @@ class VideoURL(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "message": "Airdown backend is running 🚀"}
+    return {"status": "ok", "message": "Airdown personal backend running with cookies"}
 
 @app.post("/info")
 def get_info(data: VideoURL):
@@ -28,15 +28,18 @@ def get_info(data: VideoURL):
         raise HTTPException(400, "Invalid YouTube URL")
 
     try:
+        # Using cookies file - make sure cookies.txt is in the same folder as main.py
         cmd = [
             "yt-dlp", "--dump-json", "--no-warnings",
+            "--cookies", "cookies.txt",
             "--extractor-args", "youtube:player_client=web,android,ios",
             url
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
-            raise Exception(result.stderr)
+            raise Exception(result.stderr or "Failed to extract video")
 
         info = json.loads(result.stdout)
 
@@ -44,7 +47,7 @@ def get_info(data: VideoURL):
         for f in info.get("formats", []):
             if f.get("vcodec") != "none" and f.get("acodec") != "none":
                 quality = f"{f.get('height')}p" if f.get('height') else f.get("format_note", "Unknown")
-                size = round(f.get("filesize_approx", 0) / (1024 * 1024)) if f.get("filesize_approx") else "Unknown"
+                size = round(f.get("filesize_approx", 0) / (1024*1024)) if f.get("filesize_approx") else "Unknown"
                 formats.append({
                     "format_id": f.get("format_id"),
                     "quality": quality,
@@ -60,31 +63,38 @@ def get_info(data: VideoURL):
             "title": info.get("title", "Unknown"),
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration_string", "Unknown"),
-            "formats": formats[:12]
+            "formats": formats[:15]
         }
 
     except Exception as e:
         print("Error:", str(e))
-        raise HTTPException(500, "Failed to fetch video. Try a different public video.")
+        raise HTTPException(500, "Failed to fetch video. Make sure cookies.txt is valid.")
 
 @app.get("/download")
 def download_video(url: str, format_id: str):
     try:
-        if format_id == "bestaudio":
-            cmd = ["yt-dlp", "-x", "--audio-format", "mp3", "-o", "-", url]
-            media_type = "audio/mpeg"
-            filename = "Airdown_Audio.mp3"
-        else:
-            cmd = ["yt-dlp", "-f", f"{format_id}+bestaudio/best", "--merge-output-format", "mp4", "-o", "-", url]
-            media_type = "video/mp4"
-            filename = "Airdown_Video.mp4"
+        cmd = [
+            "yt-dlp", 
+            "--cookies", "cookies.txt",
+            "-f", f"{format_id}+bestaudio/best" if format_id != "bestaudio" else "-x --audio-format mp3",
+            "--merge-output-format", "mp4" if format_id != "bestaudio" else "",
+            "--no-warnings", 
+            "-o", "-", 
+            url
+        ]
+        cmd = [x for x in cmd if x]  # remove empty strings
+
+        media_type = "audio/mpeg" if format_id == "bestaudio" else "video/mp4"
+        filename = "Airdown_Audio.mp3" if format_id == "bestaudio" else "Airdown_Video.mp4"
 
         def stream():
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-            for chunk in iter(lambda: process.stdout.read(64*1024), b""):
+            for chunk in iter(lambda: process.stdout.read(8192), b""):
                 yield chunk
 
-        return StreamingResponse(stream(), media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        return StreamingResponse(stream(), media_type=media_type, headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        })
 
     except Exception:
         raise HTTPException(500, "Download failed")
